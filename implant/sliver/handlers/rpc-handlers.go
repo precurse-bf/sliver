@@ -21,12 +21,8 @@ package handlers
 */
 
 import (
-	"io/ioutil"
 	"net"
-	"os"
-	"path/filepath"
 	"runtime"
-	"syscall"
 
 	// {{if .Config.Debug}}
 	"log"
@@ -40,8 +36,6 @@ import (
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
 
 	"google.golang.org/protobuf/proto"
-
-	"github.com/vishvananda/netns"
 )
 
 // ------------------------------------------------------------------------------------------
@@ -153,84 +147,6 @@ func ifconfig() *sliverpb.Ifconfig {
 	}
 
 	return interfaces
-}
-
-func nsLinuxIfconfig(interfaces *sliverpb.Ifconfig) {
-	namespacesFound := make(map[uint64]string)
-
-	procDir := "/proc"
-	procContents, err := ioutil.ReadDir(procDir)
-
-	if err != nil {
-		//{{if .Config.Debug}}
-		log.Printf("error reading /proc: %v", err)
-		//{{end}}
-		return
-	}
-
-	for _, entry := range procContents {
-		if !entry.IsDir() {
-			continue
-		}
-		match, _ := filepath.Match("[1-9]*", entry.Name())
-		if match {
-			// Check if /proc/PID/net/ns exists
-			checkPath := filepath.Join(procDir, entry.Name(), "/ns/net")
-
-			if _, err := os.Stat(checkPath); !os.IsNotExist(err) {
-				// path for /proc/PID/ns/net exists
-				// inode used to track unique namespaces
-				var inode uint64
-
-				fileinfo, err := os.Stat(checkPath)
-
-				if err != nil {
-					//{{if .Config.Debug}}
-					log.Printf("error : %v", err)
-					//{{end}}
-					continue
-				}
-				inode = fileinfo.Sys().(*syscall.Stat_t).Ino
-				// Track unique namespaces
-				namespacesFound[inode] = checkPath
-			}
-
-		}
-	}
-
-	// Lock the OS Thread so we don't accidentally switch namespaces
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	// Save the current network namespace
-	origns, _ := netns.Get()
-	defer origns.Close()
-
-	// We only need to use the path value
-	for _, v := range namespacesFound {
-		nsPath, err := netns.GetFromPath(v)
-		if err != nil {
-			continue
-		}
-		// Ignore origin namespace
-		if nsPath.UniqueId() == origns.UniqueId() {
-			continue
-		}
-		err = netns.Set(nsPath)
-
-		if err != nil {
-			// Failed to enter namespace
-			continue
-		}
-
-		ifaces, _ := net.Interfaces()
-		// {{if .Config.Debug}}
-		log.Printf("Interfaces: %v\n", ifaces)
-		// {{end}}
-		ifconfigParseInterfaces(ifaces, interfaces, nsPath.UniqueId())
-	}
-	// Switch back to the original namespace
-	netns.Set(origns)
 }
 
 func netstatHandler(data []byte, resp RPCResponse) {

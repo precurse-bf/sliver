@@ -110,9 +110,6 @@ github.com/tetratelabs/wazero/sys
 github.com/things-go/go-socks5
 github.com/things-go/go-socks5/bufferpool
 github.com/things-go/go-socks5/statute
-# github.com/vishvananda/netns v0.0.4
-## explicit; go 1.17
-github.com/vishvananda/netns
 # github.com/yiya1989/sshkrb5 v0.0.0-20201110125252-a1455b75a35e
 ## explicit; go 1.14
 github.com/yiya1989/sshkrb5/krb5forssh
