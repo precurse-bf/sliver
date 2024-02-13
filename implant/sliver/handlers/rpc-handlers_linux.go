@@ -95,6 +95,15 @@ func getUniqueFd(fd int) string {
 	return fmt.Sprintf("NS(%d:%d)", s.Dev, s.Ino)
 }
 
+func ifconfigLinuxHandler(_ []byte, resp RPCResponse) {
+	interfaces := ifconfigLinux()
+	// {{if .Config.Debug}}
+	log.Printf("network interfaces: %#v", interfaces)
+	// {{end}}
+	data, err := proto.Marshal(interfaces)
+	resp(data, err)
+}
+
 func nsLinuxIfconfig(interfaces *sliverpb.Ifconfig) {
 	namespacesFound := make(map[uint64]string)
 
@@ -172,4 +181,45 @@ func nsLinuxIfconfig(interfaces *sliverpb.Ifconfig) {
 	}
 	// Switch back to the original namespace
 	unix.Setns(origns, unix.CLONE_NEWNET)
+}
+
+func ifconfigLinux() *sliverpb.Ifconfig {
+	netInterfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	interfaces := &sliverpb.Ifconfig{
+		NetInterfaces: []*sliverpb.NetInterface{},
+	}
+
+	ifconfigParseInterfaces(netInterfaces, interfaces)
+	nsLinuxIfconfig(interfaces)
+
+	return interfaces
+}
+
+func ifconfigParseInterfaces(netInterfaces []net.Interface, interfaces *sliverpb.Ifconfig, namespaceId ...string) {
+	// Append namespace ID if passed in
+	var appendNsId = ""
+	if len(namespaceId) > 0 {
+		appendNsId = namespaceId[0]
+	}
+
+	for _, iface := range netInterfaces {
+		netIface := &sliverpb.NetInterface{
+			Index: int32(iface.Index),
+			Name:  iface.Name + appendNsId,
+		}
+		if iface.HardwareAddr != nil {
+			netIface.MAC = iface.HardwareAddr.String()
+		}
+		addresses, err := iface.Addrs()
+		if err == nil {
+			for _, address := range addresses {
+				netIface.IPAddresses = append(netIface.IPAddresses, address.String())
+			}
+		}
+		interfaces.NetInterfaces = append(interfaces.NetInterfaces, netIface)
+	}
 }

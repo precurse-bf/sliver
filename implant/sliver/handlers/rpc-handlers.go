@@ -22,7 +22,6 @@ package handlers
 
 import (
 	"net"
-	"runtime"
 
 	// {{if .Config.Debug}}
 	"log"
@@ -104,17 +103,19 @@ func ifconfigHandler(_ []byte, resp RPCResponse) {
 	resp(data, err)
 }
 
-func ifconfigParseInterfaces(netInterfaces []net.Interface, interfaces *sliverpb.Ifconfig, namespaceId ...string) {
-	// Append namespace ID if passed in
-	var appendNsId = ""
-	if len(namespaceId) > 0 {
-		appendNsId = namespaceId[0]
+func ifconfig() *sliverpb.Ifconfig {
+	netInterfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
 	}
 
+	interfaces := &sliverpb.Ifconfig{
+		NetInterfaces: []*sliverpb.NetInterface{},
+	}
 	for _, iface := range netInterfaces {
 		netIface := &sliverpb.NetInterface{
 			Index: int32(iface.Index),
-			Name:  iface.Name + appendNsId,
+			Name:  iface.Name,
 		}
 		if iface.HardwareAddr != nil {
 			netIface.MAC = iface.HardwareAddr.String()
@@ -127,25 +128,6 @@ func ifconfigParseInterfaces(netInterfaces []net.Interface, interfaces *sliverpb
 		}
 		interfaces.NetInterfaces = append(interfaces.NetInterfaces, netIface)
 	}
-}
-
-func ifconfig() *sliverpb.Ifconfig {
-	netInterfaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-
-	interfaces := &sliverpb.Ifconfig{
-		NetInterfaces: []*sliverpb.NetInterface{},
-	}
-
-	ifconfigParseInterfaces(netInterfaces, interfaces)
-
-	// Linux namespace handling
-	if runtime.GOOS == "linux" {
-		nsLinuxIfconfig(interfaces)
-	}
-
 	return interfaces
 }
 
