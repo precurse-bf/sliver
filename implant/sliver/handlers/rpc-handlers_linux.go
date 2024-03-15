@@ -20,18 +20,16 @@ package handlers
 
 import (
 	// {{if .Config.Debug}}
+
 	"log"
+
 	// {{end}}
 
 	"fmt"
-	"io/ioutil"
 	"net"
-	"os"
-	"path/filepath"
 	"runtime"
-       "strconv"
-	"syscall"
 
+	"github.com/bishopfox/sliver/implant/sliver/namespaces"
 	"github.com/bishopfox/sliver/implant/sliver/ps"
 	"github.com/bishopfox/sliver/protobuf/commonpb"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
@@ -75,27 +73,6 @@ func psHandler(data []byte, resp RPCResponse) {
 	resp(data, err)
 }
 
-func getFdFromPath(path string) (int, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return -1, err
-	}
-	return fd, nil
-}
-
-func getUniqueFd(fd int) string {
-	// Returns the unique namespace ID
-	var s unix.Stat_t
-
-	err := unix.Fstat(fd, &s)
-
-	if err != nil {
-		return "Unknown"
-	}
-
-	return fmt.Sprintf("NS(%d:%d)", s.Dev, s.Ino)
-}
-
 func ifconfigLinuxHandler(_ []byte, resp RPCResponse) {
 	interfaces := ifconfigLinux()
 	// {{if .Config.Debug}}
@@ -106,10 +83,7 @@ func ifconfigLinuxHandler(_ []byte, resp RPCResponse) {
 }
 
 func nsLinuxIfconfig(interfaces *sliverpb.Ifconfig) {
-	namespacesFound := make(map[uint64]string)
-
-	procDir := "/proc"
-	procContents, err := ioutil.ReadDir(procDir)
+	namespacesFound, err := namespaces.GetUniqueNamespaces(namespaces.NetworkNamespace)
 
 	if err != nil {
 		//{{if .Config.Debug}}
@@ -118,61 +92,30 @@ func nsLinuxIfconfig(interfaces *sliverpb.Ifconfig) {
 		return
 	}
 
-	for _, entry := range procContents {
-		if !entry.IsDir() {
-			continue
-		}
-		match, _ := filepath.Match("[1-9]*", entry.Name())
-		if match {
-			// Check if /proc/PID/net/ns exists
-			checkPath := filepath.Join(procDir, entry.Name(), "/ns/net")
-
-			if _, err := os.Stat(checkPath); !os.IsNotExist(err) {
-				// path for /proc/PID/ns/net exists
-				// inode used to track unique namespaces
-				var inode uint64
-
-				fileinfo, err := os.Stat(checkPath)
-
-				if err != nil {
-					//{{if .Config.Debug}}
-					log.Printf("error : %v", err)
-					//{{end}}
-					continue
-				}
-				inode = fileinfo.Sys().(*syscall.Stat_t).Ino
-				// Track unique namespaces
-				namespacesFound[inode] = checkPath
-			}
-
-		}
-	}
-
 	// Lock the OS Thread so we don't accidentally switch namespaces
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	// Save the current network namespace
-	pidPath := strconv.Itoa(os.Getpid())
-	tidPath := strconv.Itoa(unix.Gettid())
-       origns, _ := getFdFromPath(filepath.Join(procDir, pidPath, "/task", tidPath, "/ns/net"))
-	defer unix.Close(origns)
+	origns, err := namespaces.GetOriginNsFd(namespaces.NetworkNamespace)
+
+	if err != nil {
+		return
+	}
 
 	// We only need to use the path value
-       for _, nsPath := range namespacesFound {
-               nsFd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	for _, nsPath := range namespacesFound {
+		nsFd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if err != nil {
 			continue
 		}
-		// Ignore origin namespace
-		if getUniqueFd(nsFd) == getUniqueFd(origns) {
+
+		// Ignore original namespace to avoid duplicate interfaces
+		if namespaces.GetUniqueFd(nsFd) == namespaces.GetUniqueFd(origns) {
 			continue
 		}
 
-		err = unix.Setns(nsFd, unix.CLONE_NEWNET)
-
+		err = namespaces.EnterNs(nsFd, namespaces.NetworkNamespace)
 		if err != nil {
-			// Failed to enter namespace
 			continue
 		}
 
@@ -180,10 +123,11 @@ func nsLinuxIfconfig(interfaces *sliverpb.Ifconfig) {
 		// {{if .Config.Debug}}
 		log.Printf("Interfaces: %v\n", ifaces)
 		// {{end}}
-               ifconfigParseInterfaces(ifaces, interfaces, nsPath)
+		ifconfigParseInterfaces(ifaces, interfaces, nsPath)
 	}
+
 	// Switch back to the original namespace
-	unix.Setns(origns, unix.CLONE_NEWNET)
+	_ = namespaces.EnterNs(origns, namespaces.NetworkNamespace)
 }
 
 func ifconfigLinux() *sliverpb.Ifconfig {
@@ -205,8 +149,8 @@ func ifconfigLinux() *sliverpb.Ifconfig {
 func ifconfigParseInterfaces(netInterfaces []net.Interface, interfaces *sliverpb.Ifconfig, namespacePath ...string) {
 	// Append namespace ID if passed in
 	var appendNsId = ""
-       if len(namespacePath) > 0 {
-               appendNsId = fmt.Sprintf(" NS(%v)",namespacePath[0])
+	if len(namespacePath) > 0 {
+		appendNsId = fmt.Sprintf(" NS(%v)", namespacePath[0])
 	}
 
 	for _, iface := range netInterfaces {
