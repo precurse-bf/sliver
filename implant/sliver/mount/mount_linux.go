@@ -3,20 +3,97 @@
 package mount
 
 import (
+	// {{if .Config.Debug}}
+
+	"log"
+
+	// {{end}}
+
 	"bufio"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 
+	"github.com/bishopfox/sliver/implant/sliver/namespaces"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
+
+	"golang.org/x/sys/unix"
 )
 
 func GetMountInformation() ([]*sliverpb.MountInfo, error) {
+	mountFilename := "/proc/self/mountinfo"
 	mountInfo := make([]*sliverpb.MountInfo, 0)
 
-	file, err := os.Open("/proc/self/mountinfo")
+	fileMountInfo, err := parseMountFile(mountFilename, mountInfo)
 	if err != nil {
-		return mountInfo, err
+		//{{if .Config.Debug}}
+		log.Printf("error getting host mount information: %v", err)
+		//{{end}}
+	} else {
+		mountInfo = append(mountInfo, fileMountInfo...)
+	}
+
+	// Get namespace mount data
+	namespacesFound, err := namespaces.GetUniqueNamespaces(namespaces.NetworkNamespace)
+
+	if err != nil {
+		//{{if .Config.Debug}}
+		log.Printf("error getting namespaces: %v", err)
+		//{{end}}
+		return mountInfo, nil
+	}
+
+	// Lock the OS Thread so we don't accidentally switch namespaces
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	origns, err := namespaces.GetOriginNsFd(namespaces.MountNamespace)
+
+	if err != nil {
+		return mountInfo, nil
+	}
+
+	// We only need to use the path value
+	for _, nsPath := range namespacesFound {
+		nsFd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			continue
+		}
+
+		// Ignore original namespace to avoid duplicate interfaces
+		if namespaces.GetUniqueFd(nsFd) == namespaces.GetUniqueFd(origns) {
+			continue
+		}
+
+		err = namespaces.EnterNs(nsFd, namespaces.MountNamespace)
+		if err != nil {
+			continue
+		}
+
+		nsMountInfo, err := parseMountFile(mountFilename, mountInfo)
+
+		if err != nil {
+			//{{if .Config.Debug}}
+			log.Printf("error getting namespace mount information: %v", err)
+			//{{end}}
+			continue
+		}
+		mountInfo = append(mountInfo, nsMountInfo...)
+	}
+
+	// Switch back to the original namespace
+	_ = namespaces.EnterNs(origns, namespaces.MountNamespace)
+
+	return mountInfo, nil
+}
+
+func parseMountFile(mountFilename string, mountInfo []*sliverpb.MountInfo) ([]*sliverpb.MountInfo, error) {
+	fileMountInfo := make([]*sliverpb.MountInfo, 0)
+
+	file, err := os.Open(mountFilename)
+	if err != nil {
+		return nil, err
 	}
 	defer file.Close()
 
@@ -48,9 +125,9 @@ func GetMountInformation() ([]*sliverpb.MountInfo, error) {
 		mountData.VolumeName = mountSource
 		mountData.MountOptions = mountOptions
 		mountData.TotalSpace = stat.Blocks * uint64(stat.Bsize)
-		mountInfo = append(mountInfo, &mountData)
 
+		fileMountInfo = append(fileMountInfo, &mountData)
 	}
 
-	return mountInfo, nil
+	return fileMountInfo, nil
 }

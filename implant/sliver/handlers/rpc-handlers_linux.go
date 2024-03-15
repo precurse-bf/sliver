@@ -87,7 +87,7 @@ func nsLinuxIfconfig(interfaces *sliverpb.Ifconfig) {
 
 	if err != nil {
 		//{{if .Config.Debug}}
-		log.Printf("error reading /proc: %v", err)
+		log.Printf("error getting namespaces: %v", err)
 		//{{end}}
 		return
 	}
